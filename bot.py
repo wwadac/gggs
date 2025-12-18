@@ -1,212 +1,43 @@
+from aiogram.types.business_connection import BusinessConnection
 import asyncio
-import aiosqlite
 import logging
+import os
+from io import BytesIO
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import Message, BusinessMessagesDeleted
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import (
+    Message,
+    PhotoSize,
+    Video,
+    VideoNote,
+    Document,
+    BufferedInputFile,
+    BusinessMessagesDeleted
+)
 from aiogram.filters import CommandStart, Command
-from aiogram.enums import ParseMode
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ========== НАСТРОЙКИ ==========
+# !!! ВАЖНО: замени эти значения !!!
 BOT_TOKEN = "8316728730:AAEMrNJN8O7Efbk7TIDPphqGy5-4VrnigN8"
 ADMIN_ID = 8593061718  # Твой Telegram ID
-DATABASE = "messages.db"
 # ===============================
+
+if not BOT_TOKEN or BOT_TOKEN == "ВАШ_ТОКЕН_ТУТ":
+    logger.error("❌ Токен не задан! Замени BOT_TOKEN на свой токен от @BotFather")
+    exit(1)
+
+if ADMIN_ID == 123456789:
+    logger.error("❌ ID админа не задан! Укажи свой Telegram ID (узнай у @userinfobot)")
+    exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Кэш для отслеживания пересланных сообщений
-forwarded_messages = set()
-
-
-# ========== БАЗА ДАННЫХ ==========
-async def init_db():
-    """Создание таблиц в БД"""
-    async with aiosqlite.connect(DATABASE) as db:
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER,
-                business_connection_id TEXT,
-                chat_id INTEGER,
-                user_id INTEGER,
-                username TEXT,
-                first_name TEXT,
-                text TEXT,
-                caption TEXT,
-                file_id TEXT,
-                file_type TEXT,
-                date TEXT,
-                is_view_once INTEGER DEFAULT 0,
-                UNIQUE(message_id, chat_id, business_connection_id)
-            )
-        ''')
-        await db.execute('CREATE INDEX IF NOT EXISTS idx_chat_message ON messages(chat_id, message_id)')
-        await db.commit()
-
-
-async def save_message(msg: Message, business_connection_id: str = None, is_view_once: bool = False):
-    """Сохранение сообщения в БД"""
-    
-    # Определяем тип файла
-    file_id = None
-    file_type = None
-    
-    if msg.photo:
-        file_id = msg.photo[-1].file_id
-        file_type = "photo"
-        # Проверяем, является ли фото одноразкой
-        if hasattr(msg, 'has_media_spoiler') and msg.has_media_spoiler:
-            is_view_once = True
-    elif msg.video:
-        file_id = msg.video.file_id
-        file_type = "video"
-        if hasattr(msg, 'has_media_spoiler') and msg.has_media_spoiler:
-            is_view_once = True
-    elif msg.document:
-        file_id = msg.document.file_id
-        file_type = "document"
-    elif msg.voice:
-        file_id = msg.voice.file_id
-        file_type = "voice"
-    elif msg.video_note:
-        file_id = msg.video_note.file_id
-        file_type = "video_note"
-    elif msg.sticker:
-        file_id = msg.sticker.file_id
-        file_type = "sticker"
-    elif msg.audio:
-        file_id = msg.audio.file_id
-        file_type = "audio"
-    
-    # Логируем для отладки
-    logger.info(f"Сохранение сообщения {msg.message_id} от @{msg.from_user.username if msg.from_user else 'N/A'} "
-                f"тип: {file_type}, одноразка: {is_view_once}")
-    
-    async with aiosqlite.connect(DATABASE) as db:
-        await db.execute('''
-            INSERT OR REPLACE INTO messages 
-            (message_id, business_connection_id, chat_id, user_id, username, 
-             first_name, text, caption, file_id, file_type, date, is_view_once)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            msg.message_id,
-            business_connection_id,
-            msg.chat.id,
-            msg.from_user.id if msg.from_user else None,
-            msg.from_user.username if msg.from_user else None,
-            msg.from_user.first_name if msg.from_user else None,
-            msg.text,
-            msg.caption,
-            file_id,
-            file_type,
-            msg.date.isoformat(),
-            1 if is_view_once else 0
-        ))
-        await db.commit()
-
-
-async def get_message(chat_id: int, message_id: int):
-    """Получение одного сообщения из БД"""
-    async with aiosqlite.connect(DATABASE) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute('''
-            SELECT * FROM messages 
-            WHERE chat_id = ? AND message_id = ?
-        ''', (chat_id, message_id))
-        return await cursor.fetchone()
-
-
-async def forward_to_admin(chat_id: int, message_id: int, msg_data: dict = None):
-    """Пересылка сообщения админу"""
-    
-    if not msg_data:
-        msg_data = await get_message(chat_id, message_id)
-    
-    if not msg_data:
-        logger.warning(f"Сообщение {message_id} в чате {chat_id} не найдено в БД")
-        return False
-    
-    # Проверяем, не пересылали ли уже
-    cache_key = f"{chat_id}_{message_id}"
-    if cache_key in forwarded_messages:
-        return True
-    
-    try:
-        caption = f"👤 От: {msg_data['first_name']} (@{msg_data['username']})\n"
-        caption += f"💬 Chat ID: {msg_data['chat_id']}\n"
-        
-        if msg_data['text']:
-            caption += f"\n📝 Текст:\n{msg_data['text']}"
-        elif msg_data['caption']:
-            caption += f"\n📝 Подпись:\n{msg_data['caption']}"
-        
-        # Если это одноразка, добавляем пометку
-        if msg_data['is_view_once']:
-            caption += "\n\n⚠️ ОДНОРАЗОВОЕ СООБЩЕНИЕ!"
-        
-        # Отправляем медиа или текст
-        if msg_data['file_type'] == 'photo':
-            await bot.send_photo(
-                ADMIN_ID, 
-                msg_data['file_id'], 
-                caption=caption,
-                parse_mode=ParseMode.HTML
-            )
-        elif msg_data['file_type'] == 'video':
-            await bot.send_video(
-                ADMIN_ID, 
-                msg_data['file_id'], 
-                caption=caption,
-                parse_mode=ParseMode.HTML
-            )
-        elif msg_data['file_type'] == 'document':
-            await bot.send_document(
-                ADMIN_ID, 
-                msg_data['file_id'], 
-                caption=caption,
-                parse_mode=ParseMode.HTML
-            )
-        elif msg_data['file_type'] == 'voice':
-            await bot.send_voice(
-                ADMIN_ID, 
-                msg_data['file_id'], 
-                caption=caption,
-                parse_mode=ParseMode.HTML
-            )
-        elif msg_data['file_type'] == 'video_note':
-            await bot.send_video_note(ADMIN_ID, msg_data['file_id'])
-            await bot.send_message(ADMIN_ID, f"📹 Видеосообщение от @{msg_data['username']}")
-        elif msg_data['file_type'] == 'sticker':
-            await bot.send_sticker(ADMIN_ID, msg_data['file_id'])
-            await bot.send_message(ADMIN_ID, f"🩷 Стикер от @{msg_data['username']}")
-        elif msg_data['file_type'] == 'audio':
-            await bot.send_audio(ADMIN_ID, msg_data['file_id'], caption=caption)
-        else:
-            # Текстовое сообщение
-            await bot.send_message(
-                ADMIN_ID,
-                f"💬 Сообщение от @{msg_data['username']}\n\n"
-                f"Chat ID: {msg_data['chat_id']}\n\n"
-                f"📝 Текст:\n{msg_data['text']}",
-                parse_mode=ParseMode.HTML
-            )
-        
-        # Добавляем в кэш
-        forwarded_messages.add(cache_key)
-        logger.info(f"Переслано сообщение {message_id} от @{msg_data['username']}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Ошибка при пересылке: {e}")
-        await bot.send_message(ADMIN_ID, f"❌ Ошибка при пересылке: {e}")
-        return False
-
+# Кэш для предотвращения дублирования
+processed_messages = set()
 
 # ========== ОБРАБОТЧИКИ ==========
 
@@ -214,18 +45,263 @@ async def forward_to_admin(chat_id: int, message_id: int, msg_data: dict = None)
 async def cmd_start(message: Message):
     """Команда /start"""
     await message.answer(
-        "👋 <b>Привет! Я бот для сохранения одноразок.</b>\n\n"
+        "👋 <b>Бот для сохранения одноразок!</b>\n\n"
         "<b>Как использовать:</b>\n"
         "1. Подключи меня к бизнес-аккаунту\n"
         "2. Клиент отправит фото/видео с таймером\n"
         "3. Ответь на это сообщение ЛЮБЫМ текстом\n"
         "4. Я пришлю тебе копию в этот чат!\n\n"
-        "<b>Команды:</b>\n"
-        "/stats - статистика\n"
-        "/test - тестовая отправка\n"
-        "/help - помощь",
-        parse_mode=ParseMode.HTML
+        "✅ <b>Бот готов к работе!</b>",
+        parse_mode="HTML"
     )
+
+
+@dp.business_message(F.reply_to_message)
+async def handle_business_media(business_message: Message):
+    """Обработка ответов админа на сообщения клиентов"""
+    try:
+        # Проверяем, что это ответ от админа (нас)
+        business_conn: BusinessConnection = await bot.get_business_connection(
+            business_message.business_connection_id
+        )
+
+        # Если отправитель ответа НЕ владелец бизнес-аккаунта (не мы), игнорируем
+        if not business_message.from_user.id == business_conn.user.id:
+            logger.info(f"Ответ не от админа, игнорируем: {business_message.from_user.id}")
+            return
+        
+        target_message = business_message.reply_to_message
+        
+        # Проверяем, не обрабатывали ли уже это сообщение
+        cache_key = f"{target_message.chat.id}_{target_message.message_id}"
+        if cache_key in processed_messages:
+            logger.info(f"Сообщение {cache_key} уже обработано")
+            return
+        
+        logger.info(f"📨 Админ ответил на сообщение {target_message.message_id} от клиента")
+        
+        file_data = None
+        filename = None
+        caption = ""
+        
+        # Определяем тип сообщения
+        if target_message.photo:
+            logger.info(f"📸 Обнаружено фото")
+            file_data, filename = await download_photo(target_message.photo)
+            caption = f"📸 Фото от {target_message.from_user.first_name}"
+            
+        elif target_message.video:
+            logger.info(f"🎬 Обнаружено видео")
+            file_data, filename = await download_video(target_message.video)
+            caption = f"🎬 Видео от {target_message.from_user.first_name}"
+            
+        elif target_message.video_note:
+            logger.info(f"⭕ Обнаружено видеосообщение")
+            file_data, filename = await download_video_note(target_message.video_note)
+            caption = f"⭕ Видеосообщение от {target_message.from_user.first_name}"
+            
+        elif target_message.document:
+            logger.info(f"📄 Обнаружен документ")
+            file_data, filename = await download_document(target_message.document)
+            caption = f"📄 Документ от {target_message.from_user.first_name}"
+            
+        elif target_message.text:
+            logger.info(f"💬 Обнаружен текст")
+            # Для текстовых сообщений
+            caption = f"💬 Текст от {target_message.from_user.first_name}"
+            await send_text_to_owner(
+                business_conn.user.id,
+                target_message.text,
+                caption
+            )
+            processed_messages.add(cache_key)
+            await business_message.reply("✅ Текст переслан!")
+            return
+        
+        # Если есть медиафайл
+        if file_data and filename:
+            if target_message.caption:
+                caption += f"\n\n📝 Подпись: {target_message.caption}"
+            
+            # Если есть текст в сообщении админа, добавляем его
+            if business_message.text:
+                caption += f"\n\n💬 Ваш ответ: {business_message.text}"
+            
+            await send_media_to_owner(
+                business_conn.user.id,
+                file_data,
+                filename,
+                caption,
+                target_message
+            )
+            
+            processed_messages.add(cache_key)
+            
+            # Подтверждение в чат
+            await business_message.reply("✅ Переслано тебе в ЛС!")
+            
+        else:
+            logger.warning(f"Неизвестный тип сообщения: {target_message}")
+            await business_message.reply("❌ Не могу обработать этот тип сообщения")
+                    
+    except Exception as e:
+        logger.error(f"Ошибка при обработке медиа: {e}", exc_info=True)
+        try:
+            await business_message.reply(f"❌ Ошибка: {str(e)}")
+        except:
+            pass
+
+
+async def download_photo(photos: list[PhotoSize]) -> tuple[BytesIO, str]:   
+    """Скачивание фото"""
+    try:
+        file_info = await bot.get_file(photos[-1].file_id)
+        file_data = BytesIO()
+        await bot.download_file(file_info.file_path, file_data)
+        file_data.seek(0)
+        
+        filename = f"photo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        return file_data, filename
+    except Exception as e:
+        logger.error(f"Ошибка скачивания фото: {e}")
+        raise
+
+
+async def download_video(video: Video) -> tuple[BytesIO, str]:
+    """Скачивание видео"""
+    try:
+        file_info = await bot.get_file(video.file_id)
+        file_data = BytesIO()
+        await bot.download_file(file_info.file_path, file_data)
+        file_data.seek(0)
+        
+        filename = video.file_name or f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        return file_data, filename
+    except Exception as e:
+        logger.error(f"Ошибка скачивания видео: {e}")
+        raise
+
+
+async def download_video_note(video_note: VideoNote) -> tuple[BytesIO, str]:
+    """Скачивание видеосообщения"""
+    try:
+        file_info = await bot.get_file(video_note.file_id)
+        file_data = BytesIO()
+        await bot.download_file(file_info.file_path, file_data)
+        file_data.seek(0)
+        
+        filename = f"video_note_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        return file_data, filename
+    except Exception as e:
+        logger.error(f"Ошибка скачивания video note: {e}")
+        raise
+
+
+async def download_document(document: Document) -> tuple[BytesIO, str]:
+    """Скачивание документа"""
+    try:
+        file_info = await bot.get_file(document.file_id)
+        file_data = BytesIO()
+        await bot.download_file(file_info.file_path, file_data)
+        file_data.seek(0)
+        
+        filename = document.file_name or f"document_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        return file_data, filename
+    except Exception as e:
+        logger.error(f"Ошибка скачивания документа: {e}")
+        raise
+
+
+async def send_media_to_owner(
+    owner_id: int,
+    file_data: BytesIO,
+    filename: str,
+    caption: str,
+    original_message: Message = None
+):
+    """Отправка медиа владельцу бота"""
+    try:
+        # Получаем данные файла
+        file_bytes = file_data.getvalue()
+        if len(file_bytes) == 0:
+            logger.error("Пустой файл")
+            return
+        
+        input_file = BufferedInputFile(file_bytes, filename=filename)
+        
+        # Определяем тип файла и отправляем
+        filename_lower = filename.lower()
+        
+        if filename_lower.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')):
+            await bot.send_photo(
+                chat_id=owner_id,
+                photo=input_file,
+                caption=caption[:1024] if caption else None,  # Ограничение длины подписи
+                parse_mode="HTML"
+            )
+            
+        elif filename_lower.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+            await bot.send_video(
+                chat_id=owner_id,
+                video=input_file,
+                caption=caption[:1024] if caption else None,
+                parse_mode="HTML"
+            )
+            
+        elif 'video_note' in filename:
+            await bot.send_video_note(
+                chat_id=owner_id,
+                video_note=input_file
+            )
+            if caption:
+                await bot.send_message(
+                    owner_id, 
+                    caption[:1024], 
+                    parse_mode="HTML"
+                )
+                
+        else:
+            # Для документов
+            await bot.send_document(
+                chat_id=owner_id,
+                document=input_file,
+                caption=caption[:1024] if caption else None,
+                parse_mode="HTML"
+            )
+            
+        logger.info(f"✅ Медиа отправлено владельцу: {filename}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отправке медиа: {e}", exc_info=True)
+        raise
+
+
+async def send_text_to_owner(
+    owner_id: int,
+    text: str,
+    caption: str = ""
+):
+    """Отправка текста владельцу бота"""
+    try:
+        full_text = f"{caption}\n\n💬 Текст клиента:\n{text}"
+        await bot.send_message(
+            owner_id,
+            full_text[:4096],  # Ограничение Telegram
+            parse_mode="HTML"
+        )
+        logger.info("✅ Текст отправлен владельцу")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отправке текста: {e}")
+        raise
+
+
+@dp.business_message()
+async def handle_business_message(message: Message):
+    """Логирование входящих бизнес-сообщений"""
+    logger.info(f"📩 Новое сообщение от клиента: "
+                f"{message.from_user.first_name} (@{message.from_user.username}) - "
+                f"{message.text or message.caption or '[медиа]'}")
 
 
 @dp.message(Command("test"))
@@ -236,176 +312,72 @@ async def cmd_test(message: Message):
     
     await message.answer("✅ Бот работает!")
     await bot.send_message(ADMIN_ID, "✅ Тестовое сообщение в ЛС")
+    logger.info("✅ Тестовая команда выполнена")
 
 
-@dp.business_message()
-async def handle_business_message(message: Message):
-    """Обработка бизнес-сообщений от клиентов"""
-    logger.info(f"Получено бизнес-сообщение: {message.message_id} от {message.from_user.username}")
-    
-    # Логируем все атрибуты для отладки
-    logger.info(f"Атрибуты сообщения: {dir(message)}")
-    
-    # Сохраняем сообщение
-    is_view_once = False
-    
-    # Проверяем разными способами
-    if hasattr(message, 'has_media_spoiler') and message.has_media_spoiler:
-        is_view_once = True
-        logger.info(f"Обнаружена одноразка по has_media_spoiler")
-    
-    # Также проверяем в медиа
-    if message.photo and hasattr(message.photo[-1], 'has_spoiler') and message.photo[-1].has_spoiler:
-        is_view_once = True
-        logger.info(f"Обнаружена одноразка по has_spoiler в фото")
-    
-    if message.video and hasattr(message.video, 'has_spoiler') and message.video.has_spoiler:
-        is_view_once = True
-        logger.info(f"Обнаружена одноразка по has_spoiler в видео")
-    
-    # Сохраняем в базу
-    business_connection_id = getattr(message, 'business_connection_id', None)
-    await save_message(message, business_connection_id, is_view_once)
-    
-    if is_view_once:
-        logger.info(f"⚠️ Сохранена одноразка от @{message.from_user.username}")
-
-
-@dp.message(F.reply_to_message)
-async def handle_reply_to_message(message: Message):
-    """Обработка ВСЕХ ответов на сообщения"""
-    
-    # Проверяем, что это ответ в бизнес-чате
-    if not hasattr(message, 'business_connection_id') or not message.business_connection_id:
-        return
-    
-    # Проверяем, что отвечаем мы (админ)
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """Статистика"""
     if message.from_user.id != ADMIN_ID:
         return
     
-    reply_to = message.reply_to_message
-    if not reply_to:
-        return
+    stats = f"""
+    📊 <b>Статистика:</b>
     
-    logger.info(f"Админ ответил на сообщение {reply_to.message_id}")
+    Обработано сообщений: {len(processed_messages)}
+    Владелец: {ADMIN_ID}
+    Бот работает: ✅
     
-    # Получаем сообщение из БД
-    msg_data = await get_message(message.chat.id, reply_to.message_id)
-    
-    if not msg_data:
-        await message.reply("❌ Сообщение не найдено в базе данных")
-        return
-    
-    # Пересылаем ВСЕ сообщения, на которые ответил админ
-    success = await forward_to_admin(message.chat.id, reply_to.message_id, msg_data)
-    
-    if success:
-        await message.reply("✅ Сообщение переслано тебе в ЛС!")
-    else:
-        await message.reply("❌ Не удалось переслать сообщение")
-
-
-@dp.message(Command("get"))
-async def cmd_get_last(message: Message):
-    """Получить последнее сообщение из БД"""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    async with aiosqlite.connect(DATABASE) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute('''
-            SELECT * FROM messages 
-            ORDER BY date DESC LIMIT 1
-        ''')
-        last_msg = await cursor.fetchone()
-    
-    if last_msg:
-        info = (f"📊 Последнее сообщение:\n"
-                f"ID: {last_msg['message_id']}\n"
-                f"От: @{last_msg['username']}\n"
-                f"Тип: {last_msg['file_type']}\n"
-                f"Одноразка: {'Да' if last_msg['is_view_once'] else 'Нет'}")
-        await message.answer(info)
-        
-        # Пробуем переслать
-        await forward_to_admin(last_msg['chat_id'], last_msg['message_id'], last_msg)
-    else:
-        await message.answer("📭 В базе нет сообщений")
-
-
-@dp.message(Command("debug"))
-async def cmd_debug(message: Message):
-    """Отладочная информация"""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    debug_info = f"""
-    🤖 <b>Отладочная информация:</b>
-    
-    👤 Admin ID: {ADMIN_ID}
-    💾 Сообщений в кэше: {len(forwarded_messages)}
-    🗃 Бот работает: Да
-    📊 Последние 5 сообщений в кэше: {list(forwarded_messages)[-5:]}
+    <b>Последние 5 сообщений:</b>
+    {list(processed_messages)[-5:] if processed_messages else 'Нет данных'}
     """
     
-    await message.answer(debug_info, parse_mode=ParseMode.HTML)
-
-
-@dp.message(Command("clear"))
-async def cmd_clear(message: Message):
-    """Очистка кэша"""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    forwarded_messages.clear()
-    await message.answer("✅ Кэш очищен")
-
-
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    """Помощь"""
-    help_text = """
-    🆘 <b>Помощь:</b>
-    
-    <b>Как получить одноразку:</b>
-    1. Клиент отправляет фото/видео с таймером
-    2. Ты отвечаешь на это сообщение ЛЮБЫМ текстом
-    3. Бот присылает копию тебе в ЛС
-    
-    <b>Команды:</b>
-    /start - Начало работы
-    /test - Проверить работу бота
-    /get - Получить последнее сообщение
-    /debug - Отладочная информация
-    /clear - Очистить кэш
-    /help - Эта справка
-    
-    <b>Если не работает:</b>
-    1. Убедись, что бот подключен к бизнес-аккаунту
-    2. Проверь ID админа в настройках
-    3. Попробуй команду /test
-    """
-    await message.answer(help_text, parse_mode=ParseMode.HTML)
+    await message.answer(stats, parse_mode="HTML")
 
 
 # ========== ЗАПУСК ==========
 async def main():
-    await init_db()
-    
-    me = await bot.get_me()
-    logger.info(f"🚀 Бот запущен: @{me.username}")
-    logger.info(f"👤 Admin ID: {ADMIN_ID}")
-    logger.info(f"📊 Используй команду /start для инструкций")
-    
-    # Очищаем вебхук (на всякий случай)
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Запускаем поллинг
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
+    """Запуск бота"""
     try:
-        asyncio.run(main())
+        # Проверяем соединение
+        me = await bot.get_me()
+        logger.info(f"🚀 Бот запущен: @{me.username}")
+        logger.info(f"👤 Владелец: {ADMIN_ID}")
+        logger.info(f"📝 Используй /start для инструкций")
+        
+        # Очищаем вебхук
+        await bot.delete_webhook(drop_pending_updates=True)
+        
+        # Запускаем поллинг
+        await dp.start_polling(bot)
+        
     except KeyboardInterrupt:
-        print("\n👋 Бот остановлен")
+        logger.info("👋 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+    finally:
+        # Закрываем сессию
+        await bot.session.close()
+
+
+if __name__ == '__main__':
+    # Проверяем настройки
+    print("=" * 50)
+    print("🤖 БОТ ДЛЯ СОХРАНЕНИЯ ОДНОРАЗОК")
+    print("=" * 50)
+    
+    if BOT_TOKEN == "ВАШ_ТОКЕН_ТУТ":
+        print("❌ ОШИБКА: Замени BOT_TOKEN на свой токен от @BotFather")
+        exit(1)
+    
+    if ADMIN_ID == 123456789:
+        print("❌ ОШИБКА: Замени ADMIN_ID на свой Telegram ID")
+        print("👉 Узнай свой ID у @userinfobot")
+        exit(1)
+    
+    print(f"✅ Токен установлен: {'*' * 10}{BOT_TOKEN[-5:]}")
+    print(f"✅ ID владельца: {ADMIN_ID}")
+    print("=" * 50)
+    print("Запуск...")
+    
+    asyncio.run(main())
