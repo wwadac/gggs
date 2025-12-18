@@ -6,11 +6,12 @@ from aiogram.types import Message
 from aiogram.enums import ParseMode
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8316728730:AAEMrNJN8O7Efbk7TIDPphqGy5-4VrnigN8"  # Получи у @BotFather
-ADMIN_ID = 8593061718  # Твой Telegram ID (узнай у @userinfobot)
-DATABASE = "messages.db"
+BOT_TOKEN = "8316728730:AAEMrNJN8O7Efbk7TIDPphqGy5-4VrnigN8"  # Замени на свой токен
+ADMIN_ID = 8593061718  # Замени на свой ID
+SAVE_DIR = "saved_media"  # ← Вот эта строка была пропущена!
 # ===============================
 
+# Создаём папку для сохранения
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN)
@@ -28,7 +29,6 @@ async def save_all_media(message: Message):
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Определяем тип и скачиваем
     try:
         if message.photo:
             file = await bot.get_file(message.photo[-1].file_id)
@@ -120,4 +120,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main)
+    asyncio.run(main())
