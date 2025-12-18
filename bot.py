@@ -121,7 +121,7 @@ async def cmd_start(message: Message):
     await message.answer("""
 🤖 <b>DoCCER Bot</b>
 
-📸 Сохраняет Одноразки
+📸 Сохранение медиа
 ✏️ Отслеживание редактирования
 🗑 Отслеживание удаления
 
@@ -236,14 +236,6 @@ def cache_message(message: Message, owner_id: int):
         "date": message.date.strftime('%d.%m.%Y %H:%M') if message.date else None
     }
 
-@dp.business_message()
-async def cache_messages(message: Message):
-    try:
-        bc = await bot.get_business_connection(message.business_connection_id)
-        cache_message(message, bc.user.id)
-    except:
-        pass
-
 # ==================== РЕДАКТИРОВАНИЕ ====================
 
 @dp.edited_business_message()
@@ -259,7 +251,6 @@ async def handle_edited(message: Message):
         old_text = old.get("text", "") if old else ""
         new_text = message.text or message.caption or ""
         
-        # Компактный формат
         text = f"✏️ <b>Изменено</b>\n\n👤 {author}\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
         text += f"<b>Было:</b> {old_text or '<i>пусто</i>'}\n<b>Стало:</b> {new_text or '<i>пусто</i>'}"
         
@@ -283,7 +274,6 @@ async def handle_deleted(deleted: BusinessMessagesDeleted):
         
         count = len(deleted.message_ids)
         
-        # Массовое удаление (5+) = TXT файл
         if count >= 5:
             await bulk_delete_to_txt(owner_id, deleted, chat_name)
         else:
@@ -316,10 +306,8 @@ async def bulk_delete_to_txt(owner_id: int, deleted: BusinessMessagesDeleted, ch
             txt += "-" * 30 + "\n"
             saved += 1
     
-    # Уведомление
     await bot.send_message(owner_id, f"🗑 <b>Чат удалён</b>\n\n💬 {chat_name}\n📊 {len(deleted.message_ids)} сообщений\n💾 Сохранено: {saved}", parse_mode="HTML")
     
-    # TXT файл
     if saved > 0:
         safe_name = "".join(c if c.isalnum() or c in ' _-' else '_' for c in chat_name)[:30]
         filename = f"chat_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
@@ -338,7 +326,6 @@ async def single_delete(owner_id: int, deleted: BusinessMessagesDeleted):
             text = cached.get('text', '')
             media = cached.get('media_type', '')
             
-            # Компактный формат
             msg = f"🗑 <b>Удалено</b>\n\n👤 {author}\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             if media:
                 msg += f"\n📎 {media}"
@@ -346,7 +333,6 @@ async def single_delete(owner_id: int, deleted: BusinessMessagesDeleted):
             
             await bot.send_message(owner_id, msg, parse_mode="HTML")
             
-            # Медиа
             if cached.get('media_file_id'):
                 await send_media(owner_id, cached)
         else:
@@ -374,71 +360,90 @@ async def send_media(owner_id: int, cached: dict):
     except:
         pass
 
-# ==================== СОХРАНЕНИЕ МЕДИА ПО ОТВЕТУ ====================
-
-@dp.business_message(F.reply_to_message)
-async def handle_reply_media(message: Message):
-    try:
-        bc = await bot.get_business_connection(message.business_connection_id)
-        if message.from_user.id != bc.user.id:
-            return
-        
-        target = message.reply_to_message
-        author = format_user_from_msg(target.from_user)
-        
-        file_data = filename = caption = None
-        
-        if target.photo:
-            file_data, filename = await download_photo(target.photo)
-            caption = f"📷 {author}"
-        elif target.video:
-            file_data, filename = await download_video(target.video)
-            caption = f"🎥 {author}"
-        elif target.video_note:
-            file_data, filename = await download_video_note(target.video_note)
-            caption = f"⚪ {author}"
-        
-        if file_data and filename:
-            if target.caption:
-                caption += f"\n📝 {target.caption}"
-            await send_to_owner(bc.user.id, file_data, filename, caption)
-                    
-    except Exception as e:
-        logger.error(f"Reply media error: {e}")
+# ==================== СКАЧИВАНИЕ МЕДИА ====================
 
 async def download_photo(photos: list[PhotoSize]) -> tuple[BytesIO, str]:   
-    f = await bot.get_file(photos[-1].file_id)
-    data = BytesIO()
-    await bot.download_file(f.file_path, data)
-    data.seek(0)
-    return data, f"photo_{photos[-1].file_id}.jpg"
+    file_info = await bot.get_file(photos[-1].file_id)
+    file_data = BytesIO()
+    await bot.download_file(file_info.file_path, file_data)
+    file_data.seek(0)
+    return file_data, f"photo_{photos[-1].file_id}.jpg"
 
 async def download_video(video: Video) -> tuple[BytesIO, str]:
-    f = await bot.get_file(video.file_id)
-    data = BytesIO()
-    await bot.download_file(f.file_path, data)
-    data.seek(0)
-    return data, video.file_name or f"video_{video.file_id}.mp4"
+    file_info = await bot.get_file(video.file_id)
+    file_data = BytesIO()
+    await bot.download_file(file_info.file_path, file_data)
+    file_data.seek(0)
+    return file_data, video.file_name or f"video_{video.file_id}.mp4"
 
-async def download_video_note(vn: VideoNote) -> tuple[BytesIO, str]:
-    f = await bot.get_file(vn.file_id)
-    data = BytesIO()
-    await bot.download_file(f.file_path, data)
-    data.seek(0)
-    return data, f"videonote_{vn.file_id}.mp4"
+async def download_video_note(video_note: VideoNote) -> tuple[BytesIO, str]:
+    file_info = await bot.get_file(video_note.file_id)
+    file_data = BytesIO()
+    await bot.download_file(file_info.file_path, file_data)
+    file_data.seek(0)
+    return file_data, f"video_note_{video_note.file_id}.mp4"
 
 async def send_to_owner(owner_id: int, file_data: BytesIO, filename: str, caption: str):
     try:
-        inp = BufferedInputFile(file_data.read(), filename)
-        if filename.endswith(('.jpg', '.jpeg', '.png', '.gif')):
-            await bot.send_photo(owner_id, inp, caption=caption)
-        elif 'videonote' in filename:
-            await bot.send_video_note(owner_id, inp)
-            await bot.send_message(owner_id, caption)
+        input_file = BufferedInputFile(file_data.read(), filename=filename)
+        
+        if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+            await bot.send_photo(chat_id=owner_id, photo=input_file, caption=caption, parse_mode="HTML")
+        elif 'video_note' in filename:
+            await bot.send_video_note(chat_id=owner_id, video_note=input_file)
+            if caption:
+                await bot.send_message(owner_id, caption, parse_mode="HTML")
         else:
-            await bot.send_video(owner_id, inp, caption=caption)
+            await bot.send_video(chat_id=owner_id, video=input_file, caption=caption, parse_mode="HTML")
+            
     except Exception as e:
-        logger.error(f"Send error: {e}")
+        logger.error(f"Ошибка при отправке: {e}")
+
+# ==================== ЕДИНЫЙ ОБРАБОТЧИК БИЗНЕС-СООБЩЕНИЙ ====================
+
+@dp.business_message()
+async def handle_business_message(message: Message):
+    """Единый обработчик для всех бизнес-сообщений"""
+    try:
+        bc = await bot.get_business_connection(message.business_connection_id)
+        owner_id = bc.user.id
+        
+        # Всегда кэшируем сообщение
+        cache_message(message, owner_id)
+        
+        # Проверяем, это reply от владельца на медиа?
+        if message.reply_to_message and message.from_user.id == bc.user.id:
+            target = message.reply_to_message
+            
+            # Определяем автора оригинального сообщения
+            if target.from_user:
+                author = format_user_from_msg(target.from_user)
+            else:
+                author = "Неизвестный"
+            
+            file_data = None
+            filename = None
+            caption = None
+            
+            if target.photo:
+                file_data, filename = await download_photo(target.photo)
+                caption = f"📷 <b>Фото сохранено</b>\n👤 {author}"
+            elif target.video:
+                file_data, filename = await download_video(target.video)
+                caption = f"🎥 <b>Видео сохранено</b>\n👤 {author}"
+            elif target.video_note:
+                file_data, filename = await download_video_note(target.video_note)
+                caption = f"⚪ <b>Кружок сохранён</b>\n👤 {author}"
+            
+            if file_data and filename:
+                if target.caption:
+                    caption += f"\n📝 {target.caption}"
+                caption += f"\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                
+                await send_to_owner(owner_id, file_data, filename, caption)
+                    
+    except Exception as e:
+        logger.error(f"Business message error: {e}")
 
 # ==================== ЗАПУСК ====================
 
