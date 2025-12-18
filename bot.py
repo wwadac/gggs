@@ -7,7 +7,7 @@ from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8316728730:AAGeu3RWRAJo_SWe8-vBhWtoPGJX3iTx79Q"  # Получи у @BotFather
+BOT_TOKEN = "8316728730:AAEMrNJN8O7Efbk7TIDPphqGy5-4VrnigN8"  # Получи у @BotFather
 ADMIN_ID = 8593061718  # Твой Telegram ID (узнай у @userinfobot)
 DATABASE = "messages.db"
 # ===============================
