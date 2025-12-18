@@ -36,26 +36,22 @@ dp = Dispatcher()
 # ==================== ХРАНИЛИЩЕ ДАННЫХ ====================
 
 DATA_FILE = "bot_data.json"
-MESSAGES_CACHE = {}  # Кэш сообщений для отслеживания удаления/редактирования
+MESSAGES_CACHE = {}
 
 def load_data():
-    """Загрузка данных из файла"""
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"channels": [], "connected_users": []}
 
 def save_data(data):
-    """Сохранение данных в файл"""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_channels():
-    """Получить список каналов для подписки"""
     return load_data().get("channels", [])
 
 def add_channel(channel_id: str):
-    """Добавить канал"""
     data = load_data()
     if channel_id not in data["channels"]:
         data["channels"].append(channel_id)
@@ -64,7 +60,6 @@ def add_channel(channel_id: str):
     return False
 
 def remove_channel(channel_id: str):
-    """Удалить канал"""
     data = load_data()
     if channel_id in data["channels"]:
         data["channels"].remove(channel_id)
@@ -72,10 +67,29 @@ def remove_channel(channel_id: str):
         return True
     return False
 
+# ==================== ФОРМАТИРОВАНИЕ ЮЗЕРА ====================
+
+def format_user(user_data: dict) -> str:
+    """Форматирует информацию о пользователе"""
+    first_name = user_data.get('first_name', 'Unknown')
+    username = user_data.get('username')
+    
+    if username:
+        return f"{first_name} (@{username})"
+    return first_name
+
+def format_user_from_message(user) -> str:
+    """Форматирует пользователя из объекта Message"""
+    if not user:
+        return "Unknown"
+    
+    if user.username:
+        return f"{user.first_name} (@{user.username})"
+    return user.first_name
+
 # ==================== ПРОВЕРКА ПОДПИСКИ ====================
 
 async def check_subscription(user_id: int) -> tuple[bool, list]:
-    """Проверка подписки на все каналы"""
     channels = get_channels()
     if not channels:
         return True, []
@@ -97,7 +111,6 @@ async def check_subscription(user_id: int) -> tuple[bool, list]:
     return len(not_subscribed) == 0, not_subscribed
 
 def get_subscribe_keyboard(channels: list) -> InlineKeyboardMarkup:
-    """Клавиатура с кнопками подписки"""
     buttons = []
     for channel in channels:
         if channel.get("username"):
@@ -122,8 +135,6 @@ def get_subscribe_keyboard(channels: list) -> InlineKeyboardMarkup:
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    """Приветствие и гайд"""
-    # Проверка подписки
     is_subscribed, not_subscribed = await check_subscription(message.from_user.id)
     
     if not is_subscribed:
@@ -135,7 +146,7 @@ async def cmd_start(message: Message):
         return
     
     welcome_text = """
-🤖 <b>Добро пожаловать в Business Bot!</b>
+🤖 <b>Добро пожаловать в DoCCER Bot!</b>
 
 Этот бот поможет вам отслеживать сообщения в бизнес-чатах:
 • 📸 Сохранение фото, видео, кружков
@@ -179,7 +190,6 @@ async def cmd_start(message: Message):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription_callback(callback: CallbackQuery):
-    """Проверка подписки по кнопке"""
     is_subscribed, not_subscribed = await check_subscription(callback.from_user.id)
     
     if is_subscribed:
@@ -195,7 +205,6 @@ async def check_subscription_callback(callback: CallbackQuery):
 
 @dp.message(Command("addchannel"))
 async def cmd_add_channel(message: Message):
-    """Добавить канал для подписки"""
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ У вас нет прав для этой команды!")
         return
@@ -229,7 +238,6 @@ async def cmd_add_channel(message: Message):
 
 @dp.message(Command("removechannel"))
 async def cmd_remove_channel(message: Message):
-    """Удалить канал"""
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ У вас нет прав для этой команды!")
         return
@@ -259,7 +267,6 @@ async def cmd_remove_channel(message: Message):
 
 @dp.message(Command("channels"))
 async def cmd_channels(message: Message):
-    """Список каналов"""
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ У вас нет прав для этой команды!")
         return
@@ -283,15 +290,16 @@ async def cmd_channels(message: Message):
 
 @dp.business_connection()
 async def handle_business_connection(business_connection: BusinessConnection):
-    """Обработка подключения/отключения бизнес-бота"""
     user = business_connection.user
+    user_display = f"{user.first_name}"
+    if user.username:
+        user_display += f" (@{user.username})"
     
     if business_connection.is_enabled:
-        # Бот подключен
         text = f"""
 ✅ <b>Успешно подключено!</b>
 
-👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}
+👤 <b>Пользователь:</b> {user_display}
 🆔 <b>ID:</b> <code>{user.id}</code>
 📅 <b>Дата:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
@@ -306,10 +314,9 @@ async def handle_business_connection(business_connection: BusinessConnection):
 Приятного использования! 🚀
 """
         await bot.send_message(user.id, text, parse_mode="HTML")
-        logger.info(f"Бизнес-бот подключен: {user.id} ({user.first_name})")
+        logger.info(f"Бизнес-бот подключен: {user.id} ({user_display})")
         
     else:
-        # Бот отключен
         text = """
 ❌ <b>Бот отключен от бизнес-аккаунта</b>
 
@@ -319,13 +326,29 @@ async def handle_business_connection(business_connection: BusinessConnection):
             await bot.send_message(user.id, text, parse_mode="HTML")
         except:
             pass
-        logger.info(f"Бизнес-бот отключен: {user.id} ({user.first_name})")
+        logger.info(f"Бизнес-бот отключен: {user.id}")
 
 # ==================== КЭШИРОВАНИЕ СООБЩЕНИЙ ====================
 
 def cache_message(message: Message, owner_id: int):
-    """Сохранить сообщение в кэш для отслеживания"""
+    """Сохранить сообщение в кэш"""
     key = f"{message.chat.id}_{message.message_id}"
+    
+    # Определяем тип медиа
+    media_type = None
+    if message.photo:
+        media_type = "📷 Фото"
+    elif message.video:
+        media_type = "🎥 Видео"
+    elif message.video_note:
+        media_type = "⚪ Кружок"
+    elif message.voice:
+        media_type = "🎤 Голосовое"
+    elif message.document:
+        media_type = "📎 Файл"
+    elif message.sticker:
+        media_type = "🎭 Стикер"
+    
     MESSAGES_CACHE[key] = {
         "owner_id": owner_id,
         "chat_id": message.chat.id,
@@ -335,53 +358,48 @@ def cache_message(message: Message, owner_id: int):
             "first_name": message.from_user.first_name if message.from_user else "Unknown",
             "username": message.from_user.username if message.from_user else None
         },
-        "text": message.text or message.caption,
-        "has_photo": bool(message.photo),
-        "has_video": bool(message.video),
-        "has_video_note": bool(message.video_note),
-        "has_voice": bool(message.voice),
-        "has_document": bool(message.document),
-        "has_sticker": bool(message.sticker),
-        "date": message.date.isoformat() if message.date else None,
+        "text": message.text or message.caption or "",
+        "media_type": media_type,
+        "date": message.date.strftime('%d.%m.%Y %H:%M:%S') if message.date else None,
         "media_file_id": None
     }
     
     # Сохраняем file_id для медиа
     if message.photo:
         MESSAGES_CACHE[key]["media_file_id"] = message.photo[-1].file_id
-        MESSAGES_CACHE[key]["media_type"] = "photo"
+        MESSAGES_CACHE[key]["media_kind"] = "photo"
     elif message.video:
         MESSAGES_CACHE[key]["media_file_id"] = message.video.file_id
-        MESSAGES_CACHE[key]["media_type"] = "video"
+        MESSAGES_CACHE[key]["media_kind"] = "video"
     elif message.video_note:
         MESSAGES_CACHE[key]["media_file_id"] = message.video_note.file_id
-        MESSAGES_CACHE[key]["media_type"] = "video_note"
+        MESSAGES_CACHE[key]["media_kind"] = "video_note"
     elif message.voice:
         MESSAGES_CACHE[key]["media_file_id"] = message.voice.file_id
-        MESSAGES_CACHE[key]["media_type"] = "voice"
+        MESSAGES_CACHE[key]["media_kind"] = "voice"
     elif message.document:
         MESSAGES_CACHE[key]["media_file_id"] = message.document.file_id
-        MESSAGES_CACHE[key]["media_type"] = "document"
+        MESSAGES_CACHE[key]["media_kind"] = "document"
     elif message.sticker:
         MESSAGES_CACHE[key]["media_file_id"] = message.sticker.file_id
-        MESSAGES_CACHE[key]["media_type"] = "sticker"
+        MESSAGES_CACHE[key]["media_kind"] = "sticker"
 
-# ==================== ОТСЛЕЖИВАНИЕ ВСЕХ СООБЩЕНИЙ ====================
+# ==================== КЭШИРОВАНИЕ ВСЕХ СООБЩЕНИЙ ====================
 
 @dp.business_message()
 async def cache_all_business_messages(message: Message):
-    """Кэшируем все бизнес-сообщения для отслеживания удаления/редактирования"""
+    """Кэшируем все бизнес-сообщения"""
     try:
         business_conn = await bot.get_business_connection(message.business_connection_id)
         cache_message(message, business_conn.user.id)
     except Exception as e:
-        logger.error(f"Ошибка кэширования сообщения: {e}")
+        logger.error(f"Ошибка кэширования: {e}")
 
 # ==================== РЕДАКТИРОВАНИЕ СООБЩЕНИЙ ====================
 
 @dp.edited_business_message()
 async def handle_edited_message(message: Message):
-    """Отслеживание редактирования сообщений"""
+    """Отслеживание редактирования"""
     try:
         business_conn = await bot.get_business_connection(message.business_connection_id)
         owner_id = business_conn.user.id
@@ -389,28 +407,30 @@ async def handle_edited_message(message: Message):
         key = f"{message.chat.id}_{message.message_id}"
         old_data = MESSAGES_CACHE.get(key)
         
-        # Определяем кто отправил
-        sender = message.from_user
-        sender_name = sender.first_name if sender else "Неизвестный"
-        sender_mention = f"@{sender.username}" if sender and sender.username else sender_name
+        # Форматируем автора
+        author = format_user_from_message(message.from_user)
         
-        # Формируем сообщение
+        # Форматируем чат
+        chat_name = message.chat.first_name or message.chat.title or 'Неизвестный'
+        if message.chat.username:
+            chat_name += f" (@{message.chat.username})"
+        
         text = f"""
 ✏️ <b>СООБЩЕНИЕ ОТРЕДАКТИРОВАНО</b>
 
-👤 <b>Кто:</b> {sender_mention}
-💬 <b>Чат:</b> {message.chat.first_name or message.chat.title or 'Чат'}
 ⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-
 ━━━━━━━━━━━━━━━━━━━━━━
+👤 <b>Автор:</b> {author}
+💬 <b>Чат:</b> {chat_name}
+
 """
         if old_data and old_data.get("text"):
-            text += f"📝 <b>БЫЛО:</b>\n<code>{old_data['text']}</code>\n\n"
+            text += f"📝 <b>БЫЛО:</b>\n{old_data['text']}\n\n"
         else:
-            text += "📝 <b>БЫЛО:</b> <i>(текст не сохранен)</i>\n\n"
+            text += "📝 <b>БЫЛО:</b> <i>(не сохранено)</i>\n\n"
         
         new_text = message.text or message.caption or ""
-        text += f"📝 <b>СТАЛО:</b>\n<code>{new_text}</code>"
+        text += f"📝 <b>СТАЛО:</b>\n{new_text}"
         
         await bot.send_message(owner_id, text, parse_mode="HTML")
         
@@ -429,83 +449,173 @@ async def handle_deleted_messages(deleted: BusinessMessagesDeleted):
         business_conn = await bot.get_business_connection(deleted.business_connection_id)
         owner_id = business_conn.user.id
         
-        for msg_id in deleted.message_ids:
-            key = f"{deleted.chat.id}_{msg_id}"
-            cached = MESSAGES_CACHE.get(key)
-            
-            text = f"""
-🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>
-
-💬 <b>Чат:</b> {deleted.chat.first_name or deleted.chat.title or 'Чат'}
-⏰ <b>Время удаления:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-
-━━━━━━━━━━━━━━━━━━━━━━
-"""
-            
-            if cached:
-                sender_name = cached['from_user']['first_name']
-                text += f"👤 <b>Автор:</b> {sender_name}\n"
-                
-                if cached.get('text'):
-                    text += f"\n📝 <b>Содержимое:</b>\n<code>{cached['text']}</code>"
-                
-                # Определяем тип медиа
-                media_types = []
-                if cached.get('has_photo'):
-                    media_types.append("📷 Фото")
-                if cached.get('has_video'):
-                    media_types.append("🎥 Видео")
-                if cached.get('has_video_note'):
-                    media_types.append("⚪ Кружок")
-                if cached.get('has_voice'):
-                    media_types.append("🎤 Голосовое")
-                if cached.get('has_document'):
-                    media_types.append("📎 Файл")
-                if cached.get('has_sticker'):
-                    media_types.append("🎭 Стикер")
-                
-                if media_types:
-                    text += f"\n\n📎 <b>Медиа:</b> {', '.join(media_types)}"
-                
-                await bot.send_message(owner_id, text, parse_mode="HTML")
-                
-                # Отправляем медиа если есть
-                if cached.get('media_file_id'):
-                    try:
-                        media_type = cached.get('media_type')
-                        file_id = cached['media_file_id']
-                        caption = "📎 Удаленное медиа:"
-                        
-                        if media_type == "photo":
-                            await bot.send_photo(owner_id, file_id, caption=caption)
-                        elif media_type == "video":
-                            await bot.send_video(owner_id, file_id, caption=caption)
-                        elif media_type == "video_note":
-                            await bot.send_video_note(owner_id, file_id)
-                            await bot.send_message(owner_id, caption)
-                        elif media_type == "voice":
-                            await bot.send_voice(owner_id, file_id, caption=caption)
-                        elif media_type == "document":
-                            await bot.send_document(owner_id, file_id, caption=caption)
-                        elif media_type == "sticker":
-                            await bot.send_sticker(owner_id, file_id)
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить удаленное медиа: {e}")
-                
-                # Удаляем из кэша
-                del MESSAGES_CACHE[key]
-            else:
-                text += "\n⚠️ <i>Содержимое сообщения не было сохранено</i>"
-                await bot.send_message(owner_id, text, parse_mode="HTML")
+        # Форматируем чат
+        chat_name = deleted.chat.first_name or deleted.chat.title or 'Неизвестный'
+        if deleted.chat.username:
+            chat_name += f" (@{deleted.chat.username})"
+        
+        # Определяем - это массовое удаление (удаление чата) или одиночное
+        deleted_count = len(deleted.message_ids)
+        is_bulk_delete = deleted_count >= 5  # Если 5+ сообщений - считаем массовым
+        
+        if is_bulk_delete:
+            # ==================== МАССОВОЕ УДАЛЕНИЕ - СОХРАНЯЕМ В TXT ====================
+            await handle_bulk_delete(owner_id, deleted, chat_name)
+        else:
+            # ==================== ОДИНОЧНОЕ УДАЛЕНИЕ ====================
+            await handle_single_delete(owner_id, deleted, chat_name)
                 
     except Exception as e:
         logger.error(f"Ошибка обработки удаления: {e}")
+
+
+async def handle_bulk_delete(owner_id: int, deleted: BusinessMessagesDeleted, chat_name: str):
+    """Обработка массового удаления (удаление чата) - сохраняем в TXT"""
+    
+    # Собираем все сообщения для файла
+    txt_content = f"🗑 УДАЛЕН ЧАТ / МАССОВОЕ УДАЛЕНИЕ\n"
+    txt_content += f"{'='*50}\n"
+    txt_content += f"💬 Чат: {chat_name}\n"
+    txt_content += f"⏰ Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+    txt_content += f"📊 Удалено сообщений: {len(deleted.message_ids)}\n"
+    txt_content += f"{'='*50}\n\n"
+    
+    saved_count = 0
+    
+    for msg_id in deleted.message_ids:
+        key = f"{deleted.chat.id}_{msg_id}"
+        cached = MESSAGES_CACHE.get(key)
+        
+        if cached:
+            author = format_user(cached['from_user'])
+            date = cached.get('date', 'Неизвестно')
+            text = cached.get('text', '')
+            media_type = cached.get('media_type', '')
+            
+            txt_content += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            txt_content += f"👤 Автор: {author}\n"
+            txt_content += f"⏰ Дата: {date}\n"
+            
+            if media_type:
+                txt_content += f"📎 Медиа: {media_type}\n"
+            
+            if text:
+                txt_content += f"📝 Текст:\n{text}\n"
+            else:
+                txt_content += f"📝 Текст: (пусто)\n"
+            
+            txt_content += "\n"
+            saved_count += 1
+            
+            # Удаляем из кэша
+            del MESSAGES_CACHE[key]
+    
+    txt_content += f"{'='*50}\n"
+    txt_content += f"✅ Сохранено сообщений: {saved_count}\n"
+    
+    # Отправляем уведомление
+    notification = f"""
+🗑 <b>ЧАТ УДАЛЕН / МАССОВОЕ УДАЛЕНИЕ</b>
+
+⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+━━━━━━━━━━━━━━━━━━━━━━
+💬 <b>Чат:</b> {chat_name}
+📊 <b>Удалено:</b> {len(deleted.message_ids)} сообщений
+💾 <b>Сохранено:</b> {saved_count} сообщений
+
+📄 История чата сохранена в файл ⬇️
+"""
+    await bot.send_message(owner_id, notification, parse_mode="HTML")
+    
+    # Отправляем TXT файл
+    if saved_count > 0:
+        # Создаем безопасное имя файла
+        safe_chat_name = "".join(c if c.isalnum() or c in (' ', '_', '-') else '_' for c in chat_name)
+        filename = f"deleted_chat_{safe_chat_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        
+        file_data = txt_content.encode('utf-8')
+        input_file = BufferedInputFile(file_data, filename=filename)
+        
+        await bot.send_document(
+            chat_id=owner_id,
+            document=input_file,
+            caption="📄 История удаленного чата"
+        )
+
+
+async def handle_single_delete(owner_id: int, deleted: BusinessMessagesDeleted, chat_name: str):
+    """Обработка одиночного удаления - отправляем уведомление + медиа"""
+    
+    for msg_id in deleted.message_ids:
+        key = f"{deleted.chat.id}_{msg_id}"
+        cached = MESSAGES_CACHE.get(key)
+        
+        if cached:
+            author = format_user(cached['from_user'])
+            text = cached.get('text', '')
+            media_type = cached.get('media_type', '')
+            
+            notification = f"""
+🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>
+
+⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+━━━━━━━━━━━━━━━━━━━━━━
+👤 <b>Автор:</b> {author}
+💬 <b>Чат:</b> {chat_name}
+"""
+            if media_type:
+                notification += f"📎 <b>Медиа:</b> {media_type}\n"
+            
+            notification += f"\n📝: {text if text else '<i>(пусто)</i>'}"
+            
+            await bot.send_message(owner_id, notification, parse_mode="HTML")
+            
+            # Отправляем медиа если есть
+            if cached.get('media_file_id'):
+                try:
+                    await send_deleted_media(owner_id, cached)
+                except Exception as e:
+                    logger.error(f"Не удалось отправить медиа: {e}")
+            
+            # Удаляем из кэша
+            del MESSAGES_CACHE[key]
+        else:
+            # Сообщение не было в кэше
+            notification = f"""
+🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>
+
+⏰ <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+━━━━━━━━━━━━━━━━━━━━━━
+💬 <b>Чат:</b> {chat_name}
+
+📝: <i>(содержимое не сохранено)</i>
+"""
+            await bot.send_message(owner_id, notification, parse_mode="HTML")
+
+
+async def send_deleted_media(owner_id: int, cached: dict):
+    """Отправка удаленного медиа"""
+    media_kind = cached.get('media_kind')
+    file_id = cached['media_file_id']
+    
+    if media_kind == "photo":
+        await bot.send_photo(owner_id, file_id, caption="📷 Удаленное фото")
+    elif media_kind == "video":
+        await bot.send_video(owner_id, file_id, caption="🎥 Удаленное видео")
+    elif media_kind == "video_note":
+        await bot.send_video_note(owner_id, file_id)
+    elif media_kind == "voice":
+        await bot.send_voice(owner_id, file_id, caption="🎤 Удаленное голосовое")
+    elif media_kind == "document":
+        await bot.send_document(owner_id, file_id, caption="📎 Удаленный файл")
+    elif media_kind == "sticker":
+        await bot.send_sticker(owner_id, file_id)
 
 # ==================== СОХРАНЕНИЕ МЕДИА ПО ОТВЕТУ ====================
 
 @dp.business_message(F.reply_to_message)
 async def handle_business_media(business_message: Message):
-    """Сохранение медиа при ответе на сообщение"""
+    """Сохранение медиа при ответе"""
     try:
         business_conn = await bot.get_business_connection(
             business_message.business_connection_id
@@ -520,17 +630,20 @@ async def handle_business_media(business_message: Message):
         filename = None
         caption = None
         
+        # Форматируем автора сообщения
+        author = format_user_from_message(target_message.from_user)
+        
         if target_message.photo:
             file_data, filename = await download_photo(target_message.photo)
-            caption = f"📷 Фото от {target_message.from_user.first_name if target_message.from_user else 'Unknown'}"
+            caption = f"📷 Фото от {author}"
             
         elif target_message.video:
             file_data, filename = await download_video(target_message.video)
-            caption = f"🎥 Видео от {target_message.from_user.first_name if target_message.from_user else 'Unknown'}"
+            caption = f"🎥 Видео от {author}"
             
         elif target_message.video_note:
             file_data, filename = await download_video_note(target_message.video_note)
-            caption = f"⚪ Кружок от {target_message.from_user.first_name if target_message.from_user else 'Unknown'}"
+            caption = f"⚪ Кружок от {author}"
         
         if file_data and filename:
             if target_message.caption:
