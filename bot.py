@@ -1,225 +1,267 @@
-from telethon import TelegramClient, events, Button
-import json
-import os
-import sqlite3
+import asyncio
+import aiosqlite
 from datetime import datetime
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import Message, BusinessMessagesDeleted
+from aiogram.filters import CommandStart
+from aiogram.enums import ParseMode
 
-# ВСТАВЬ СВОИ ДАННЫЕ ЗДЕСЬ
-api_id = 29385016                    # Твой API ID
-api_hash = '3c57df8805ab5de5a23a032ed39b9af9'          # Твой API Hash
-bot_token = '8334964804:AAHdieIWn4McjFWkSeoLq6UthsUodP1N5lY'    # Токен бота от BotFather
+# ========== НАСТРОЙКИ ==========
+BOT_TOKEN = "8316728730:AAGeu3RWRAJo_SWe8-vBhWtoPGJX3iTx79Q"  # Получи у @BotFather
+ADMIN_ID = 8593061718  # Твой Telegram ID (узнай у @userinfobot)
+DATABASE = "messages.db"
+# ===============================
 
-# ID администратора (замени на свой)
-ADMIN_ID = 8000395560
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
 
-# Инициализация базы данных
-def init_db():
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            registration_date TEXT,
-            last_activity TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def is_admin(user_id):
-    return user_id == ADMIN_ID
-
-def save_user_to_db(user_id, username, first_name, last_name):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    now = datetime.now().isoformat()
-    
-    cursor.execute('''
-        INSERT OR REPLACE INTO users 
-        (user_id, username, first_name, last_name, registration_date, last_activity) 
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, first_name, last_name, now, now))
-    
-    conn.commit()
-    conn.close()
-
-def update_user_activity(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    now = datetime.now().isoformat()
-    
-    cursor.execute('''
-        UPDATE users SET last_activity = ? WHERE user_id = ?
-    ''', (now, user_id))
-    
-    conn.commit()
-    conn.close()
-
-def get_user_stats():
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM users')
-    total_users = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM users WHERE date(last_activity) = date("now")')
-    active_today = cursor.fetchone()[0]
-    
-    conn.close()
-    return total_users, active_today
-
-@client.on(events.NewMessage(pattern='/start'))
-async def start_handler(event):
-    user_id = event.sender_id
-    user = await event.get_sender()
-    
-    # Сохраняем пользователя в базу
-    save_user_to_db(user_id, user.username, user.first_name, user.last_name)
-    
-    keyboard = [
-        [Button.inline("Мой айди", b'my_id')],
-        [Button.inline("Айди другого", b'other_id')]
-    ]
-    
-    # Добавляем админские кнопки только для админа
-    if is_admin(user_id):
-        keyboard.extend([
-            [Button.inline("📊 Статистика", b'stats'), Button.inline("📢 Рассылка", b'broadcast')],
-            [Button.inline("💾 Скачать базу", b'download_db'), Button.inline("📤 Загрузить базу", b'upload_db')]
-        ])
-    
-    await event.reply('Выберите опцию:', buttons=keyboard)
-
-@client.on(events.CallbackQuery)
-async def callback_handler(event):
-    user_id = event.sender_id
-    update_user_activity(user_id)
-    
-    if event.data == b'my_id':
-        await event.edit(f"🆔 Ваш ID: {user_id}")
-    
-    elif event.data == b'other_id':
-        await event.edit("📩 Перешлите сообщение от нужного пользователя или напишите его юзернейм")
-    
-    elif event.data == b'stats':
-        if not is_admin(user_id):
-            await event.edit("❌ Доступ запрещен")
-            return
-        total_users, active_today = get_user_stats()
-        await event.edit(f"📊 Статистика бота:\n\n👥 Всего пользователей: {total_users}\n🟢 Активных сегодня: {active_today}")
-    
-    elif event.data == b'broadcast':
-        if not is_admin(user_id):
-            await event.edit("❌ Доступ запрещен")
-            return
-        await event.edit("📢 Введите сообщение для рассылки:")
-    
-    elif event.data == b'download_db':
-        if not is_admin(user_id):
-            await event.edit("❌ Доступ запрещен")
-            return
-        try:
-            await event.client.send_file(
-                event.chat_id,
-                'bot_database.db',
-                caption='💾 База данных бота'
+# ========== БАЗА ДАННЫХ ==========
+async def init_db():
+    """Создание таблиц в БД"""
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                message_id INTEGER,
+                business_connection_id TEXT,
+                chat_id INTEGER,
+                user_id INTEGER,
+                username TEXT,
+                first_name TEXT,
+                text TEXT,
+                caption TEXT,
+                file_id TEXT,
+                file_type TEXT,
+                date TEXT,
+                PRIMARY KEY (message_id, chat_id)
             )
-            await event.delete()
-        except Exception as e:
-            await event.edit(f"❌ Ошибка при отправке базы: {str(e)}")
-    
-    elif event.data == b'upload_db':
-        if not is_admin(user_id):
-            await event.edit("❌ Доступ запрещен")
-            return
-        await event.edit("📤 Отправьте файл базы данных (bot_database.db) для загрузки")
+        ''')
+        await db.commit()
 
-@client.on(events.NewMessage)
-async def message_handler(event):
-    user_id = event.sender_id
-    update_user_activity(user_id)
+
+async def save_message(msg: Message, business_connection_id: str = None):
+    """Сохранение сообщения в БД"""
     
-    # Обработка загрузки базы данных
-    if is_admin(user_id) and event.message.file:
-        try:
-            file = await event.download_media(file='temp_db.db')
-            os.rename('temp_db.db', 'bot_database.db')
-            await event.reply("✅ База данных успешно обновлена!")
-            return
-        except Exception as e:
-            await event.reply(f"❌ Ошибка при загрузке базы: {str(e)}")
-            return
+    # Определяем тип файла
+    file_id = None
+    file_type = None
     
-    # Обработка рассылки для админа
-    if is_admin(user_id) and event.message.text and not event.message.text.startswith('/'):
-        # Проверяем, не было ли это ответом на запрос рассылки
-        if event.is_reply:
-            replied_msg = await event.get_reply_message()
-            if 'рассылк' in replied_msg.text.lower():
-                message_text = event.message.text
-                sent_count = 0
-                
-                await event.reply("🔄 Начинаю рассылку...")
-                
-                # Получаем всех пользователей из базы
-                conn = sqlite3.connect('bot_database.db')
-                cursor = conn.cursor()
-                cursor.execute('SELECT user_id FROM users')
-                users = cursor.fetchall()
-                conn.close()
-                
-                # Рассылаем сообщение всем пользователям
-                for user_row in users:
-                    try:
-                        await client.send_message(user_row[0], f"📢 Рассылка:\n\n{message_text}")
-                        sent_count += 1
-                    except:
-                        continue
-                
-                await event.reply(f"✅ Рассылка завершена\n\nОтправлено сообщений: {sent_count}")
-                return
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        file_type = "photo"
+    elif msg.video:
+        file_id = msg.video.file_id
+        file_type = "video"
+    elif msg.document:
+        file_id = msg.document.file_id
+        file_type = "document"
+    elif msg.voice:
+        file_id = msg.voice.file_id
+        file_type = "voice"
+    elif msg.video_note:
+        file_id = msg.video_note.file_id
+        file_type = "video_note"
+    elif msg.sticker:
+        file_id = msg.sticker.file_id
+        file_type = "sticker"
+    elif msg.audio:
+        file_id = msg.audio.file_id
+        file_type = "audio"
     
-    # Игнорируем команды
-    if event.message.text and event.message.text.startswith('/'):
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO messages 
+            (message_id, business_connection_id, chat_id, user_id, username, 
+             first_name, text, caption, file_id, file_type, date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            msg.message_id,
+            business_connection_id,
+            msg.chat.id,
+            msg.from_user.id if msg.from_user else None,
+            msg.from_user.username if msg.from_user else None,
+            msg.from_user.first_name if msg.from_user else None,
+            msg.text,
+            msg.caption,
+            file_id,
+            file_type,
+            msg.date.isoformat()
+        ))
+        await db.commit()
+
+
+async def get_messages(chat_id: int, message_ids: list):
+    """Получение сообщений из БД"""
+    async with aiosqlite.connect(DATABASE) as db:
+        db.row_factory = aiosqlite.Row
+        placeholders = ','.join('?' * len(message_ids))
+        cursor = await db.execute(f'''
+            SELECT * FROM messages 
+            WHERE chat_id = ? AND message_id IN ({placeholders})
+        ''', [chat_id] + message_ids)
+        return await cursor.fetchall()
+
+
+# ========== ОБРАБОТЧИКИ ==========
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    """Команда /start"""
+    await message.answer(
+        "👋 <b>Привет!</b>\n\n"
+        "Я бот для сохранения удалённых сообщений.\n\n"
+        "📌 <b>Как подключить:</b>\n"
+        "1. Перейди в <b>Настройки → Telegram Business</b>\n"
+        "2. Выбери <b>Чат-боты</b>\n"
+        "3. Добавь этого бота\n\n"
+        "После подключения я буду сохранять все сообщения от клиентов "
+        "и уведомлять тебя об удалённых! 🔔",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@dp.business_message()
+async def handle_business_message(message: Message):
+    """Обработка бизнес-сообщений (от клиентов)"""
+    
+    # Сохраняем сообщение
+    await save_message(message, message.business_connection_id)
+    
+    print(f"💾 Сохранено сообщение от @{message.from_user.username}: {message.text or '[медиа]'}")
+
+
+@dp.edited_business_message()
+async def handle_edited_business_message(message: Message):
+    """Обработка отредактированных сообщений"""
+    
+    # Получаем старую версию
+    old_messages = await get_messages(message.chat.id, [message.message_id])
+    
+    if old_messages:
+        old = old_messages[0]
+        await bot.send_message(
+            ADMIN_ID,
+            f"✏️ <b>Сообщение отредактировано!</b>\n\n"
+            f"👤 Клиент: {message.from_user.first_name} (@{message.from_user.username})\n\n"
+            f"📝 <b>Было:</b>\n{old['text'] or old['caption'] or '[медиа]'}\n\n"
+            f"📝 <b>Стало:</b>\n{message.text or message.caption or '[медиа]'}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Обновляем в базе
+    await save_message(message, message.business_connection_id)
+
+
+@dp.deleted_business_messages()
+async def handle_deleted_messages(event: BusinessMessagesDeleted):
+    """🔥 ГЛАВНАЯ ФИЧА: Обработка удалённых сообщений"""
+    
+    # Получаем удалённые сообщения из базы
+    deleted = await get_messages(event.chat.id, event.message_ids)
+    
+    if not deleted:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🗑 <b>Удалено {len(event.message_ids)} сообщений</b>\n"
+            f"👤 Чат: {event.chat.first_name} (ID: {event.chat.id})\n\n"
+            f"⚠️ Сообщения не найдены в базе (возможно, бот был подключён позже)",
+            parse_mode=ParseMode.HTML
+        )
         return
     
-    # Обработка пересланных сообщений
-    if event.message.forward:
-        try:
-            forward_header = event.message.forward
-            sender_id = forward_header.sender_id
-            
-            if sender_id:
-                try:
-                    user = await client.get_entity(sender_id)
-                    await event.reply(f"🆔 ID пользователя {user.first_name}: {user.id}")
-                except:
-                    await event.reply(f"🆔 ID пользователя: {sender_id}")
-            else:
-                await event.reply("❌ Не удалось получить ID отправителя")
-        except Exception as e:
-            await event.reply(f"❌ Ошибка при обработке пересланного сообщения: {str(e)}")
-        return
-    
-    # Обработка юзернеймов (с @ и без)
-    if event.message.text:
-        text = event.message.text.strip()
-        if text.startswith('@'):
-            text = text[1:]
+    for msg in deleted:
+        text = msg['text'] or msg['caption'] or ''
         
-        if text:
+        # Формируем уведомление
+        notification = (
+            f"🗑 <b>УДАЛЁННОЕ СООБЩЕНИЕ!</b>\n\n"
+            f"👤 <b>От:</b> {msg['first_name']} (@{msg['username']})\n"
+            f"🆔 <b>Chat ID:</b> <code>{msg['chat_id']}</code>\n"
+            f"📅 <b>Дата:</b> {msg['date']}\n\n"
+        )
+        
+        # Отправляем контент
+        if msg['file_type'] and msg['file_id']:
+            notification += f"📎 <b>Тип:</b> {msg['file_type']}\n"
+            if text:
+                notification += f"📝 <b>Подпись:</b> {text}\n"
+            
+            await bot.send_message(ADMIN_ID, notification, parse_mode=ParseMode.HTML)
+            
+            # Отправляем медиафайл
             try:
-                user = await client.get_entity(text)
-                await event.reply(f"🆔 ID пользователя {user.first_name}: {user.id}")
+                if msg['file_type'] == 'photo':
+                    await bot.send_photo(ADMIN_ID, msg['file_id'], caption="👆 Удалённое фото")
+                elif msg['file_type'] == 'video':
+                    await bot.send_video(ADMIN_ID, msg['file_id'], caption="👆 Удалённое видео")
+                elif msg['file_type'] == 'document':
+                    await bot.send_document(ADMIN_ID, msg['file_id'], caption="👆 Удалённый документ")
+                elif msg['file_type'] == 'voice':
+                    await bot.send_voice(ADMIN_ID, msg['file_id'], caption="👆 Удалённое голосовое")
+                elif msg['file_type'] == 'video_note':
+                    await bot.send_video_note(ADMIN_ID, msg['file_id'])
+                elif msg['file_type'] == 'sticker':
+                    await bot.send_sticker(ADMIN_ID, msg['file_id'])
+                elif msg['file_type'] == 'audio':
+                    await bot.send_audio(ADMIN_ID, msg['file_id'], caption="👆 Удалённое аудио")
             except Exception as e:
-                await event.reply("❌ Пользователь не найден")
+                await bot.send_message(ADMIN_ID, f"⚠️ Не удалось отправить файл: {e}")
+        else:
+            notification += f"💬 <b>Текст:</b>\n<code>{text}</code>"
+            await bot.send_message(ADMIN_ID, notification, parse_mode=ParseMode.HTML)
+    
+    print(f"🗑 Отправлено {len(deleted)} удалённых сообщений админу")
 
-print("Бот запущен...")
-client.run_until_disconnected()
+
+@dp.business_connection()
+async def handle_business_connection(connection: types.BusinessConnection):
+    """Обработка подключения/отключения бота к бизнес-аккаунту"""
+    
+    if connection.is_enabled:
+        await bot.send_message(
+            connection.user.id,
+            "✅ <b>Бот успешно подключён!</b>\n\n"
+            "Теперь я буду сохранять все сообщения от клиентов "
+            "и уведомлять тебя об удалённых.",
+            parse_mode=ParseMode.HTML
+        )
+        print(f"✅ Подключён к бизнес-аккаунту: @{connection.user.username}")
+    else:
+        await bot.send_message(
+            connection.user.id,
+            "❌ <b>Бот отключён от бизнес-аккаунта.</b>",
+            parse_mode=ParseMode.HTML
+        )
+
+
+@dp.message(F.text == "/stats")
+async def cmd_stats(message: Message):
+    """Статистика сохранённых сообщений"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM messages")
+        count = (await cursor.fetchone())[0]
+        
+        cursor = await db.execute("SELECT COUNT(DISTINCT chat_id) FROM messages")
+        chats = (await cursor.fetchone())[0]
+    
+    await message.answer(
+        f"📊 <b>Статистика:</b>\n\n"
+        f"💬 Сохранено сообщений: <b>{count}</b>\n"
+        f"👥 Уникальных чатов: <b>{chats}</b>",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ========== ЗАПУСК ==========
+async def main():
+    await init_db()
+    print("🚀 Бот запущен!")
+    print(f"👤 Admin ID: {ADMIN_ID}")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
